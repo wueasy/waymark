@@ -1,0 +1,52 @@
+server:
+  port: 9868
+  gzip: true # 是否对响应启用 gzip 压缩（SSE 长连接不做压缩）
+
+log:
+  level: info        # 日志级别 debug/info/warn/error
+  max-size: 100      # 单个日志文件最大大小（MB）
+  max-backups: 100   # 保留的旧日志文件数量
+  max-age: 100       # 日志保留天数
+  sensitive:         # 日志脱敏，避免密码等敏感信息写入日志
+    max-length: 1000 # 单个字段值超过该长度则截断（避免大段配置内容刷屏）；上限 1000，超过会导致启动崩溃
+    field-rules:
+      - field-names: ["password", "oldpassword", "newpassword", "confirmpassword", "password2"]
+        type: password
+      - field-names: ["token", "authorization", "secret", "jwt-secret", "jwtsecret"]
+        type: password
+
+auth:
+  jwt-secret: "70312595-a517-4932-bfdd-ace926aa5186"     # 集群模式必须配置且各节点一致；单机模式留空则自动生成随机密钥
+  token-ttl: 7200    # 秒，令牌有效期
+
+demo:
+  enabled: true           # 演示环境开关：开启后，protected-users 中的账号将被冻结
+  protected-users: ["admin"]      # 受保护账号用户名：禁止删除、重置/修改密码、禁用启用、改昵称与角色分配
+
+db:
+  type: sqlite       # mysql | sqlite
+  mysql:
+    dsn: "root:123456@tcp(127.0.0.1:3306)/waymark?charset=utf8mb4&parseTime=true&loc=Local"
+    max-open-conns: 50
+    max-idle-conns: 10
+  sqlite:
+    path: "./data/waymark.db"
+
+cluster:
+  enabled: false           # 集群开关，sqlite 模式下必须为 false
+  node-id: ""              # 空则自动生成为 主机名-MAC-端口（跨机器唯一）
+  ip: ""                   # 本节点注册 IP，空则自动探测本机 IP；配置后以此为准
+  port: 0                  # 本节点注册端口，0 则使用 server.port；配置后以此为准
+  lease-ttl: 10            # 秒，Leader 租约时长
+  election-interval: 3     # 秒，选举/续租周期
+  node-timeout: 30         # 秒，节点心跳超时（标记为离线）
+  node-retain: 300         # 秒，节点无心跳超过该时长后从节点列表移除
+
+registry:
+  heartbeat-timeout: 15    # 秒，实例心跳超时（超时后临时实例删除、持久实例标记不健康）
+  sweep-interval: 10       # 秒，淘汰扫描周期（由 Leader 执行）
+
+sse:
+  heartbeat: 15            # 秒，SSE keep-alive 间隔
+  poll-ms: 500             # 毫秒，变更日志扫描周期
+  log-retention: 0           # 秒，变更日志保留期（0 表示不保留）

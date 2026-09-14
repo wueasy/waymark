@@ -1,0 +1,54 @@
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+body {
+  background-color: var(--el-bg-color-page);
+  /* 统一默认字体：Element Plus 只定义变量，需在 body 上落地 */
+  font-family: var(--el-font-family);
+  font-size: var(--el-font-size-base);
+}
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mb {
+  margin-bottom: 16px;
+}
+.table-skeleton {
+  padding: 4px 0;
+}
+.table-skeleton-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.table-skeleton-row:last-child {
+  margin-bottom: 0;
+}
+/* size="small" 的表格默认字号是 12px，偏小；提到 14px，保留紧凑行高 */
+.el-table--small {
+  font-size: var(--el-font-size-base);
+}
+.meta {
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+}
+.code {
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: var(--el-fill-color-light);
+  padding: 12px;
+  border-radius: 4px;
+  margin: 0;
+  font-size: 13px;
+}
