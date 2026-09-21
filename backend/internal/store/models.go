@@ -91,6 +91,27 @@ type ConfigItem struct {
 	Type       string `db:"type" json:"type"`
 	CreateTime int64  `db:"create_time" json:"createTime"`
 	UpdateTime int64  `db:"update_time" json:"updateTime"`
+
+	// 以下字段仅在列表联查草稿时填充（不落 config_info 表）。
+	HasDraft        int    `db:"has_draft" json:"hasDraft"`
+	DraftMd5        string `db:"draft_md5" json:"draftMd5"`
+	DraftUpdateTime int64  `db:"draft_update_time" json:"draftUpdateTime"`
+	DraftOperator   string `db:"draft_operator" json:"draftOperator"`
+}
+
+// ConfigDraft 配置草稿。编辑态数据，发布前不影响下游（不写变更日志）。
+type ConfigDraft struct {
+	Id         int64  `db:"id" json:"id"`
+	Namespace  string `db:"namespace" json:"namespace"`
+	GroupName  string `db:"group_name" json:"groupName"`
+	DataId     string `db:"data_id" json:"dataId"`
+	Content    string `db:"content" json:"content"`
+	Md5        string `db:"md5" json:"md5"`
+	Type       string `db:"type" json:"type"`
+	BasedMd5   string `db:"based_md5" json:"basedMd5"` // 草稿基于的已发布版本摘要，用于冲突检测
+	Operator   string `db:"operator" json:"operator"`
+	CreateTime int64  `db:"create_time" json:"createTime"`
+	UpdateTime int64  `db:"update_time" json:"updateTime"`
 }
 
 // ConfigHistory 配置历史版本。
@@ -114,6 +135,22 @@ type ChangeLog struct {
 	WatchKey   string `db:"watch_key" json:"watchKey"`
 	Md5        string `db:"md5" json:"md5"`
 	ChangeTime int64  `db:"change_time" json:"changeTime"`
+}
+
+// SubscriberSession SSE 订阅会话。一条连接一行，落库后集群内各节点均可查询，
+// 连接断开时删除；节点异常退出遗留的记录由 Leader 依据节点状态清理。
+type SubscriberSession struct {
+	Id          int64  `db:"id" json:"id"`
+	NodeId      string `db:"node_id" json:"nodeId"`
+	Namespace   string `db:"namespace" json:"namespace"`
+	GroupName   string `db:"group_name" json:"group"`
+	ConfigKeys  string `db:"config_keys" json:"-"` // JSON 数组文本，响应时转换为 []string
+	InstanceKey string `db:"instance_key" json:"instanceKey"`
+	ClientIp    string `db:"client_ip" json:"clientIp"`
+	Username    string `db:"username" json:"username"`
+	ConnectedAt int64  `db:"connected_at" json:"connectedAt"`
+	// LastHeartbeat 最后一次 SSE keep-alive 心跳时间（毫秒），用于判断连接是否仍然活跃。
+	LastHeartbeat int64 `db:"last_heartbeat" json:"lastHeartbeat"`
 }
 
 // ClusterNode 集群节点。

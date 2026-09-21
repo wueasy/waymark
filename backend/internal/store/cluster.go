@@ -43,6 +43,12 @@ func (s *Store) MarkNodesDown(timeout time.Duration) (int64, error) {
 	return res.RowsAffected()
 }
 
+// MarkNodeDown 将指定节点标记为 DOWN，用于进程优雅退出时立即反映节点下线。
+func (s *Store) MarkNodeDown(nodeId string) error {
+	_, err := s.db.Exec("UPDATE cluster_node SET status = ? WHERE node_id = ?", NodeStatusDown, nodeId)
+	return err
+}
+
 // DeleteStaleNodes 移除长时间无心跳的节点记录，返回删除数量。
 // 保留时长应显著大于 node-timeout：节点先被标记 DOWN，超过保留期后才移除。
 // 超时阈值按数据库时钟计算，避免跨机器时钟漂移误删。

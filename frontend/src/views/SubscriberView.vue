@@ -25,27 +25,59 @@
           <div class="card-header">
             <span>订阅列表</span>
             <div class="toolbar">
-              <span class="subscriber-hint">实时展示当前 SSE 订阅连接</span>
+              <span class="subscriber-hint">实时展示集群内全部 SSE 订阅连接</span>
               <el-button size="small" @click="loadSubscribers">刷新</el-button>
             </div>
           </div>
         </template>
 
+        <div class="filter-bar">
+          <el-input
+            v-model="filters.nodeId"
+            placeholder="节点"
+            clearable
+            size="small"
+            class="filter-item"
+            @keyup.enter="applyFilter"
+          />
+          <el-input
+            v-model="filters.groupName"
+            placeholder="分组"
+            clearable
+            size="small"
+            class="filter-item"
+            @keyup.enter="applyFilter"
+          />
+          <el-input
+            v-model="filters.keyword"
+            placeholder="关键字（服务 / IP / 用户）"
+            clearable
+            size="small"
+            class="filter-item filter-keyword"
+            @keyup.enter="applyFilter"
+          />
+          <el-button size="small" type="primary" @click="applyFilter">查询</el-button>
+          <el-button size="small" @click="resetFilter">重置</el-button>
+        </div>
+
         <el-skeleton v-if="loading" animated class="table-skeleton">
           <template #template>
             <div v-for="i in 5" :key="i" class="table-skeleton-row">
               <el-skeleton-item variant="text" :style="{ flex: 13 }" />
+              <el-skeleton-item variant="text" :style="{ flex: 18 }" />
               <el-skeleton-item variant="text" :style="{ flex: 15 }" />
               <el-skeleton-item variant="text" :style="{ flex: 18 }" />
               <el-skeleton-item variant="text" :style="{ flex: 18 }" />
               <el-skeleton-item variant="text" :style="{ flex: 14 }" />
               <el-skeleton-item variant="text" :style="{ flex: 12 }" />
               <el-skeleton-item variant="text" :style="{ flex: 15 }" />
+              <el-skeleton-item variant="text" :style="{ flex: 15 }" />
             </div>
           </template>
         </el-skeleton>
         <el-table v-else :data="subscribers" size="small" empty-text="暂无订阅端连接">
           <el-table-column prop="namespace" label="命名空间" width="130" />
+          <el-table-column prop="nodeId" label="节点" min-width="180" show-overflow-tooltip />
           <el-table-column prop="group" label="分组" width="150" />
           <el-table-column label="订阅配置" min-width="150">
             <template #default="{ row }">{{ formatConfigKeys(row.configKeys) }}</template>
@@ -58,14 +90,19 @@
           <el-table-column label="连接时间" width="150">
             <template #default="{ row }">{{ fromNow(row.connectedAt) }}</template>
           </el-table-column>
+          <el-table-column label="心跳时间" width="150">
+            <template #default="{ row }">{{ fromNow(row.lastHeartbeat) }}</template>
+          </el-table-column>
         </el-table>
 
         <el-pagination
           class="pager"
-          layout="total, prev, pager, next"
+          layout="total, sizes, prev, pager, next"
           :total="total"
           :page-size="pageSize"
           :current-page="pageNum"
+          :page-sizes="[10, 20, 50, 100]"
+          @size-change="onSizeChange"
           @current-change="onPageChange"
         />
       </el-card>
@@ -92,6 +129,7 @@ const loading = ref(false)
 const total = ref(0)
 const pageNum = ref(1)
 const pageSize = ref(20)
+const filters = ref({ nodeId: '', groupName: '', keyword: '' })
 
 onMounted(async () => {
   try {
@@ -119,7 +157,10 @@ async function loadSubscribers() {
     const data = await listSubscribers({
       namespace: namespace.value,
       pageNum: pageNum.value,
-      pageSize: pageSize.value
+      pageSize: pageSize.value,
+      nodeId: filters.value.nodeId.trim(),
+      groupName: filters.value.groupName.trim(),
+      keyword: filters.value.keyword.trim()
     })
     subscribers.value = data.list || []
     total.value = data.total || 0
@@ -132,6 +173,26 @@ async function loadSubscribers() {
 
 function onPageChange(page) {
   pageNum.value = page
+  loadSubscribers()
+}
+
+// 切换每页条数后回到第一页重新加载。
+function onSizeChange(size) {
+  pageSize.value = size
+  pageNum.value = 1
+  loadSubscribers()
+}
+
+// 应用筛选条件后回到第一页重新加载。
+function applyFilter() {
+  pageNum.value = 1
+  loadSubscribers()
+}
+
+// 清空筛选条件后回到第一页重新加载。
+function resetFilter() {
+  filters.value = { nodeId: '', groupName: '', keyword: '' }
+  pageNum.value = 1
   loadSubscribers()
 }
 
@@ -188,6 +249,18 @@ function formatConfigKeys(keys) {
 .subscriber-hint {
   color: var(--el-text-color-secondary);
   font-size: 13px;
+}
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.filter-item {
+  width: 180px;
+}
+.filter-keyword {
+  width: 220px;
 }
 .pager {
   margin-top: 12px;

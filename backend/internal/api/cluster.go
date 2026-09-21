@@ -12,9 +12,9 @@ func (s *Server) handleClusterNodes(c *gin.Context) {
 		return
 	}
 	ok(c, gin.H{
-		"mode":    s.mode(),
-		"nodeId":  s.cluster.NodeId(),
-		"nodes":   list,
+		"mode":   s.mode(),
+		"nodeId": s.cluster.NodeId(),
+		"nodes":  list,
 	})
 }
 

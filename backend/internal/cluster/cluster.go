@@ -70,6 +70,13 @@ func (c *Cluster) Start(ctx context.Context) {
 	if err := c.store.UpsertNode(c.nodeId, c.address); err != nil {
 		wlog.Ctx(ctx).Warnf("[cluster] 注册节点失败: %v", err)
 	}
+	// 节点重启后，上次运行异常退出遗留的订阅会话记录已失效，启动时清理，
+	// 避免订阅列表出现永不消失的僵尸连接。
+	if n, err := c.store.DeleteSubscribersByNode(c.nodeId); err != nil {
+		wlog.Ctx(ctx).Warnf("[cluster] 清理本节点遗留订阅会话失败: %v", err)
+	} else if n > 0 {
+		wlog.Ctx(ctx).Infof("[cluster] 清理本节点遗留订阅会话 %d 条", n)
+	}
 	if !c.cfg.Cluster.Enabled {
 		c.leader.Store(true)
 		wlog.Ctx(ctx).Infof("[cluster] 单机模式，当前节点承担全部维护任务，nodeId=%s", c.nodeId)
@@ -207,6 +214,14 @@ func (c *Cluster) maintain(ctx context.Context) {
 		wlog.Ctx(ctx).Warnf("[cluster] 移除失效节点失败: %v", err)
 	} else if n > 0 {
 		wlog.Ctx(ctx).Infof("[cluster] 移除 %d 个长时间无心跳节点", n)
+	}
+
+	// 必须在 DeleteStaleNodes 之后：仅清理节点记录已被移除的会话，
+	// 防止节点仅短暂心跳失败时会话被误删（连接实际仍存活）。
+	if n, err := c.store.DeleteOrphanSubscribers(); err != nil {
+		wlog.Ctx(ctx).Warnf("[cluster] 清理失效节点订阅会话失败: %v", err)
+	} else if n > 0 {
+		wlog.Ctx(ctx).Infof("[cluster] 清理失效节点订阅会话 %d 条", n)
 	}
 
 	retention := time.Duration(c.cfg.SSE.LogRetention) * time.Second

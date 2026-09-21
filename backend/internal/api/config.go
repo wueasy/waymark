@@ -101,6 +101,142 @@ func (s *Server) handlePublishConfig(c *gin.Context) {
 	okNull(c)
 }
 
+// handleSaveDraft 保存配置草稿。草稿不影响下游，需发布后才同步。
+func (s *Server) handleSaveDraft(c *gin.Context) {
+	var req configRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, "参数错误: "+err.Error())
+		return
+	}
+	namespace := resolveNamespace(req.Namespace)
+	dataId := strings.TrimSpace(req.DataId)
+	if dataId == "" {
+		fail(c, "dataId 不能为空")
+		return
+	}
+	if !s.authorizeNamespace(c, namespace, true) {
+		return
+	}
+	if !s.ensureNamespaceExists(c, namespace) {
+		return
+	}
+	group := resolveGroup(req.GroupName)
+	draft, err := s.configCenter.SaveDraft(namespace, group, dataId, req.Content, req.Type, requestUser(c))
+	if err != nil {
+		fail(c, "保存草稿失败: "+err.Error())
+		return
+	}
+	auditf(c, "保存配置草稿 namespace=%s groupName=%s dataId=%s md5=%s", namespace, group, dataId, draft.Md5)
+	ok(c, draft)
+}
+
+// handleGetDraft 查询配置草稿详情。
+func (s *Server) handleGetDraft(c *gin.Context) {
+	namespace := resolveNamespace(c.Query("namespace"))
+	group := resolveGroup(c.Query("groupName"))
+	dataId := strings.TrimSpace(c.Query("dataId"))
+	if dataId == "" {
+		fail(c, "dataId 不能为空")
+		return
+	}
+	if !s.authorizeNamespace(c, namespace, false) {
+		return
+	}
+	draft, err := s.configCenter.GetDraft(namespace, group, dataId)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			fail(c, "草稿不存在: "+dataId)
+			return
+		}
+		fail(c, "查询草稿失败: "+err.Error())
+		return
+	}
+	ok(c, draft)
+}
+
+// handleDiscardDraft 放弃配置草稿。
+func (s *Server) handleDiscardDraft(c *gin.Context) {
+	namespace := resolveNamespace(c.Query("namespace"))
+	group := resolveGroup(c.Query("groupName"))
+	dataId := strings.TrimSpace(c.Query("dataId"))
+	if dataId == "" {
+		fail(c, "dataId 不能为空")
+		return
+	}
+	if !s.authorizeNamespace(c, namespace, true) {
+		return
+	}
+	if err := s.configCenter.DiscardDraft(namespace, group, dataId); err != nil {
+		fail(c, "放弃草稿失败: "+err.Error())
+		return
+	}
+	auditf(c, "放弃配置草稿 namespace=%s groupName=%s dataId=%s", namespace, group, dataId)
+	okNull(c)
+}
+
+// handlePreviewDraftDiff 预览草稿相对已发布版本的变更内容。
+func (s *Server) handlePreviewDraftDiff(c *gin.Context) {
+	namespace := resolveNamespace(c.Query("namespace"))
+	group := resolveGroup(c.Query("groupName"))
+	dataId := strings.TrimSpace(c.Query("dataId"))
+	if dataId == "" {
+		fail(c, "dataId 不能为空")
+		return
+	}
+	if !s.authorizeNamespace(c, namespace, false) {
+		return
+	}
+	result, err := s.configCenter.PreviewDraft(namespace, group, dataId)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			fail(c, "草稿不存在: "+dataId)
+			return
+		}
+		fail(c, "预览变更失败: "+err.Error())
+		return
+	}
+	ok(c, result)
+}
+
+type configPublishRequest struct {
+	Namespace string `json:"namespace"`
+	GroupName string `json:"groupName"`
+	DataId    string `json:"dataId"`
+	Force     bool   `json:"force"`
+}
+
+// handlePublishDraft 发布草稿：发布后配置才会同步到下游。force 为 true 时强制覆盖已被他人更新的配置。
+func (s *Server) handlePublishDraft(c *gin.Context) {
+	var req configPublishRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, "参数错误: "+err.Error())
+		return
+	}
+	namespace := resolveNamespace(req.Namespace)
+	dataId := strings.TrimSpace(req.DataId)
+	if dataId == "" {
+		fail(c, "dataId 不能为空")
+		return
+	}
+	if !s.authorizeNamespace(c, namespace, true) {
+		return
+	}
+	group := resolveGroup(req.GroupName)
+	if err := s.configCenter.PublishDraft(namespace, group, dataId, req.Force); err != nil {
+		switch {
+		case errors.Is(err, configcenter.ErrDraftConflict):
+			failCode(c, codeConflict, err.Error())
+		case errors.Is(err, store.ErrNotFound):
+			fail(c, "草稿不存在: "+dataId)
+		default:
+			fail(c, "发布配置失败: "+err.Error())
+		}
+		return
+	}
+	auditf(c, "发布配置草稿 namespace=%s groupName=%s dataId=%s force=%t", namespace, group, dataId, req.Force)
+	okNull(c)
+}
+
 // handleDeleteConfig 删除配置。
 func (s *Server) handleDeleteConfig(c *gin.Context) {
 	namespace := resolveNamespace(c.Query("namespace"))

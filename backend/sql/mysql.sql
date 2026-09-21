@@ -90,6 +90,22 @@ CREATE TABLE IF NOT EXISTS `config_info` (
   UNIQUE KEY `uk_config` (`namespace`, `group_name`, `data_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS `config_draft` (
+  `id`          BIGINT       NOT NULL AUTO_INCREMENT,
+  `namespace`   VARCHAR(64)  NOT NULL DEFAULT 'public',
+  `group_name`  VARCHAR(64)  NOT NULL DEFAULT 'DEFAULT_GROUP',
+  `data_id`     VARCHAR(128) NOT NULL,
+  `content`     LONGTEXT     NOT NULL,
+  `md5`         VARCHAR(32)  NOT NULL,
+  `type`        VARCHAR(32)  NOT NULL DEFAULT 'text',
+  `based_md5`   VARCHAR(32)  NOT NULL DEFAULT '',
+  `operator`    VARCHAR(64)  NOT NULL DEFAULT '',
+  `create_time` BIGINT       NOT NULL,
+  `update_time` BIGINT       NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_config_draft` (`namespace`, `group_name`, `data_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS `config_history` (
   `id`          BIGINT       NOT NULL AUTO_INCREMENT,
   `namespace`   VARCHAR(64)  NOT NULL,
@@ -113,6 +129,22 @@ CREATE TABLE IF NOT EXISTS `change_log` (
   `change_time` BIGINT       NOT NULL,
   PRIMARY KEY (`seq`),
   KEY `idx_change_time` (`change_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS `subscriber_session` (
+  `id`           BIGINT       NOT NULL AUTO_INCREMENT,
+  `node_id`      VARCHAR(64)  NOT NULL,
+  `namespace`    VARCHAR(64)  NOT NULL DEFAULT 'public',
+  `group_name`   VARCHAR(64)  NOT NULL DEFAULT 'DEFAULT_GROUP',
+  `config_keys`  TEXT         NOT NULL,
+  `instance_key` VARCHAR(128) NOT NULL DEFAULT '',
+  `client_ip`    VARCHAR(64)  NOT NULL DEFAULT '',
+  `username`     VARCHAR(64)  NOT NULL DEFAULT '',
+  `connected_at` BIGINT       NOT NULL,
+  `last_heartbeat` BIGINT     NOT NULL DEFAULT 0 COMMENT '最后一次 SSE keep-alive 心跳时间（毫秒）',
+  PRIMARY KEY (`id`),
+  KEY `idx_subscriber_ns` (`namespace`),
+  KEY `idx_subscriber_node` (`node_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS `cluster_node` (

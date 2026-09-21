@@ -57,14 +57,26 @@ func (s *Server) Start() {
 	s.cluster.Start(ctx)
 }
 
-// Close 释放资源。
+// Close 释放资源。退出前清理本节点订阅会话并将节点标记为 DOWN，
+// 使订阅列表与集群节点状态立即反映下线，无需等待心跳超时。
 func (s *Server) Close() {
 	if s.cancel != nil {
 		s.cancel()
 	}
-	if s.store != nil {
-		_ = s.store.Close()
+	if s.store == nil {
+		return
 	}
+	ctx := wlog.Ctx(context.Background())
+	nodeId := s.cluster.NodeId()
+	if n, err := s.store.DeleteSubscribersByNode(nodeId); err != nil {
+		ctx.Warnf("[server] 清理本节点订阅会话失败: %v", err)
+	} else if n > 0 {
+		ctx.Infof("[server] 清理本节点订阅会话 %d 条", n)
+	}
+	if err := s.store.MarkNodeDown(nodeId); err != nil {
+		ctx.Warnf("[server] 标记本节点下线失败: %v", err)
+	}
+	_ = s.store.Close()
 }
 
 // Register 将 API 路由注册到 gin 引擎。
@@ -100,6 +112,11 @@ func (s *Server) Register(r *gin.Engine) {
 	authed.GET("/configs/detail", s.handleGetConfig)
 	authed.GET("/configs/history", s.handleConfigHistory)
 	authed.POST("/configs", s.handlePublishConfig)
+	authed.PUT("/configs/draft", s.handleSaveDraft)
+	authed.GET("/configs/draft", s.handleGetDraft)
+	authed.DELETE("/configs/draft", s.handleDiscardDraft)
+	authed.GET("/configs/draft/diff", s.handlePreviewDraftDiff)
+	authed.POST("/configs/publish", s.handlePublishDraft)
 	authed.POST("/configs/restore", s.handleRestoreConfig)
 	authed.POST("/configs/export", s.handleExportConfigs)
 	authed.POST("/configs/import", s.handleImportConfigs)

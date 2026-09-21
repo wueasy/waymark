@@ -8,9 +8,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	wlog "github.com/wueasy/wueasy-go-tools/log"
 
 	"waymark/internal/auth"
-	"waymark/internal/event"
+	"waymark/internal/store"
 )
 
 // handleSubscribe 订阅变更（SSE 长连接）：一条连接同时订阅配置与实例变更。
@@ -45,7 +46,14 @@ func resolveKeys(values []string) []string {
 	return out
 }
 
+// subscriberView 订阅端列表项：在会话记录基础上把订阅键展开为数组。
+type subscriberView struct {
+	store.SubscriberSession
+	ConfigKeys []string `json:"configKeys"`
+}
+
 // handleListSubscribers 分页查询指定命名空间下的订阅端列表。
+// 数据取自 subscriber_session 表，因此展示的是集群内全部节点的 SSE 连接，而非仅当前节点。
 func (s *Server) handleListSubscribers(c *gin.Context) {
 	namespace := resolveNamespace(c.Query("namespace"))
 	if !s.authorizeNamespace(c, namespace, false) {
@@ -57,29 +65,53 @@ func (s *Server) handleListSubscribers(c *gin.Context) {
 		pageSize = 200
 	}
 
-	all := s.hub.ListSubscribers()
-	matched := make([]event.Subscriber, 0, len(all))
-	for _, sub := range all {
-		if sub.Namespace == namespace {
-			matched = append(matched, sub)
-		}
+	filter := store.SubscriberFilter{
+		NodeId:    strings.TrimSpace(c.Query("nodeId")),
+		GroupName: strings.TrimSpace(c.Query("groupName")),
+		Keyword:   strings.TrimSpace(c.Query("keyword")),
 	}
 
-	total := int64(len(matched))
-	start := (pageNum - 1) * pageSize
-	if start > len(matched) {
-		start = len(matched)
+	list, total, err := s.store.ListSubscribers(namespace, filter, pageNum, pageSize)
+	if err != nil {
+		fail(c, "查询订阅端失败: "+err.Error())
+		return
 	}
-	end := start + pageSize
-	if end > len(matched) {
-		end = len(matched)
+
+	views := make([]subscriberView, 0, len(list))
+	for _, sess := range list {
+		views = append(views, subscriberView{SubscriberSession: sess, ConfigKeys: decodeConfigKeys(sess.ConfigKeys)})
 	}
+
 	ok(c, gin.H{
-		"list":     matched[start:end],
+		"list":     views,
 		"total":    total,
 		"pageNum":  pageNum,
 		"pageSize": pageSize,
 	})
+}
+
+// encodeConfigKeys 将订阅键序列化为 JSON 存库，nil 统一存为空数组。
+func encodeConfigKeys(keys []string) string {
+	if len(keys) == 0 {
+		return "[]"
+	}
+	payload, err := json.Marshal(keys)
+	if err != nil {
+		return "[]"
+	}
+	return string(payload)
+}
+
+// decodeConfigKeys 解析会话中存储的订阅键，异常数据退化为空数组。
+func decodeConfigKeys(raw string) []string {
+	keys := make([]string, 0)
+	if raw == "" {
+		return keys
+	}
+	if err := json.Unmarshal([]byte(raw), &keys); err != nil {
+		return []string{}
+	}
+	return keys
 }
 
 // streamEvents 以 SSE 协议持续推送变更事件；configKeys 为空表示不订阅配置，
@@ -90,19 +122,40 @@ func (s *Server) streamEvents(c *gin.Context, namespace, group string, configKey
 		heartbeat = 15 * time.Second
 	}
 
+	ctx := c.Request.Context()
 	username := ""
 	if p := auth.CurrentPrincipal(c); p != nil && p.User != nil {
 		username = p.User.Username
 	}
-	ch, unsubscribe := s.hub.Subscribe(namespace, group, configKeys, instanceKey, c.ClientIP(), username)
+	ch, unsubscribe := s.hub.Subscribe(namespace, group, configKeys, instanceKey)
 	defer unsubscribe()
+
+	// 会话落库，使订阅列表在集群内可见；连接断开（含客户端异常掉线）时删除本行。
+	sess := &store.SubscriberSession{
+		NodeId:      s.cluster.NodeId(),
+		Namespace:   namespace,
+		GroupName:   group,
+		ConfigKeys:  encodeConfigKeys(configKeys),
+		InstanceKey: instanceKey,
+		ClientIp:    c.ClientIP(),
+		Username:    username,
+	}
+	if err := s.store.SaveSubscriber(sess); err != nil {
+		wlog.Ctx(ctx).Warnf("[subscribe] 记录订阅会话失败: %v", err)
+	}
+	defer func() {
+		if sess.Id > 0 {
+			if err := s.store.DeleteSubscriber(sess.Id); err != nil {
+				wlog.Ctx(ctx).Warnf("[subscribe] 清理订阅会话失败: %v", err)
+			}
+		}
+	}()
 
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
 
-	ctx := c.Request.Context()
 	ticker := time.NewTicker(heartbeat)
 	defer ticker.Stop()
 
@@ -128,6 +181,12 @@ func (s *Server) streamEvents(c *gin.Context, namespace, group string, configKey
 		case <-ticker.C:
 			if _, err := fmt.Fprint(w, ": ping\n\n"); err != nil {
 				return false
+			}
+			// 心跳同时刷新落库时间，订阅列表据此展示连接的最后心跳。
+			if sess.Id > 0 {
+				if err := s.store.UpdateSubscriberHeartbeat(sess.Id); err != nil {
+					wlog.Ctx(ctx).Warnf("[subscribe] 更新订阅会话心跳失败: %v", err)
+				}
 			}
 			return true
 		}

@@ -13,6 +13,7 @@ import (
 // 业务返回码。
 const (
 	codeFail         = 1001
+	codeConflict     = 1002
 	codeUnauthorized = 401
 	codeForbidden    = 403
 )

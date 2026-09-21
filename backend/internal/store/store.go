@@ -106,7 +106,29 @@ func (s *Store) Init() error {
 		return err
 	}
 	if s.dialect == DialectSQLite {
-		return s.migrateLegacySQLite()
+		if err := s.migrateLegacySQLite(); err != nil {
+			return err
+		}
+		return s.migrateSubscriberHeartbeat()
+	}
+	return nil
+}
+
+// migrateSubscriberHeartbeat 为历史 SQLite 库补建 subscriber_session.last_heartbeat 列并回填（幂等）。
+func (s *Store) migrateSubscriberHeartbeat() error {
+	has, err := s.sqliteHasColumn("subscriber_session", "last_heartbeat")
+	if err != nil {
+		return err
+	}
+	if has {
+		return nil
+	}
+	if _, err := s.db.Exec("ALTER TABLE subscriber_session ADD COLUMN last_heartbeat INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return fmt.Errorf("补充 subscriber_session.last_heartbeat 列失败: %w", err)
+	}
+	// 历史会话没有心跳记录，用连接时间回填，避免展示为空。
+	if _, err := s.db.Exec("UPDATE subscriber_session SET last_heartbeat = connected_at WHERE last_heartbeat = 0"); err != nil {
+		return fmt.Errorf("回填 subscriber_session.last_heartbeat 失败: %w", err)
 	}
 	return nil
 }

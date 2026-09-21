@@ -85,9 +85,12 @@
     </el-dialog>
 
     <el-dialog v-model="passwordVisible" title="重置密码" width="420px">
-      <el-form ref="passwordFormRef" :model="passwordForm" :rules="passwordRules" label-width="70px">
+      <el-form ref="passwordFormRef" :model="passwordForm" :rules="passwordRules" label-width="90px">
         <el-form-item label="新密码" prop="password">
           <el-input v-model="passwordForm.password" type="password" show-password placeholder="请输入新密码" />
+        </el-form-item>
+        <el-form-item label="确认密码" prop="confirmPassword">
+          <el-input v-model="passwordForm.confirmPassword" type="password" show-password placeholder="请再次输入新密码" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -128,9 +131,22 @@ const formRules = {
 
 const passwordVisible = ref(false)
 const passwordFormRef = ref()
-const passwordForm = reactive({ id: 0, password: '' })
+const passwordForm = reactive({ id: 0, password: '', confirmPassword: '' })
 const passwordRules = {
-  password: [{ required: true, message: '请输入新密码', trigger: 'blur' }]
+  password: [{ required: true, message: '请输入新密码', trigger: 'blur' }],
+  confirmPassword: [
+    { required: true, message: '请再次输入新密码', trigger: 'blur' },
+    {
+      validator: (rule, value, callback) => {
+        if (value !== passwordForm.password) {
+          callback(new Error('两次输入的新密码不一致'))
+          return
+        }
+        callback()
+      },
+      trigger: 'blur'
+    }
+  ]
 }
 
 onMounted(async () => {
@@ -218,6 +234,8 @@ async function remove(row) {
 function openPassword(row) {
   passwordForm.id = row.id
   passwordForm.password = ''
+  passwordForm.confirmPassword = ''
+  passwordFormRef.value?.clearValidate()
   passwordVisible.value = true
 }
 

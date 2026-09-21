@@ -64,10 +64,12 @@
 
         <el-pagination
           class="pager"
-          layout="total, prev, pager, next"
+          layout="total, sizes, prev, pager, next"
           :total="total"
           :page-size="pageSize"
           :current-page="pageNum"
+          :page-sizes="[10, 20, 50, 100]"
+          @size-change="onSizeChange"
           @current-change="onPageChange"
         />
       </el-card>
@@ -222,6 +224,13 @@ async function loadServices() {
 
 function onPageChange(page) {
   pageNum.value = page
+  loadServices()
+}
+
+// 切换每页条数后回到第一页重新加载。
+function onSizeChange(size) {
+  pageSize.value = size
+  pageNum.value = 1
   loadServices()
 }
 

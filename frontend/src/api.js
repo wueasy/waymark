@@ -68,12 +68,14 @@ async function request(path, options = {}) {
   }
 
   if (!body || body.successful !== true) {
-    throw new Error((body && body.msg) || `请求失败：HTTP ${res.status}`)
+    const err = new Error((body && body.msg) || `请求失败：HTTP ${res.status}`)
+    err.code = body && body.code
+    throw err
   }
   return body.data
 }
 
-/** 统一请求入口，成功时返回 data，失败时抛出含有 msg 的错误。 */
+/** 统一请求入口，成功时返回 data，失败时抛出含有 msg/code 的错误。 */
 export function api(path, options = {}) {
   return request(path, options)
 }
@@ -258,6 +260,37 @@ export function getConfig(params) {
 
 export function publishConfig(payload) {
   return api('/api/configs', { method: 'POST', body: JSON.stringify(payload) })
+}
+
+/** 保存配置草稿，草稿发布前不会同步到下游。 */
+export function saveConfigDraft(payload) {
+  return api('/api/configs/draft', { method: 'PUT', body: JSON.stringify(payload) })
+}
+
+/** 查询配置草稿，草稿不存在时返回 null。 */
+export async function getConfigDraft(params) {
+  try {
+    return await api(withQuery('/api/configs/draft', params))
+  } catch (e) {
+    if (e.code === 1001 && /不存在/.test(e.message)) {
+      return null
+    }
+    throw e
+  }
+}
+
+export function discardConfigDraft(params) {
+  return api(withQuery('/api/configs/draft', params), { method: 'DELETE' })
+}
+
+/** 预览草稿相对已发布版本的变更内容。 */
+export function previewConfigDraft(params) {
+  return api(withQuery('/api/configs/draft/diff', params))
+}
+
+/** 发布草稿，force 为 true 时强制覆盖已被他人更新的配置。 */
+export function publishConfigDraft(payload) {
+  return api('/api/configs/publish', { method: 'POST', body: JSON.stringify(payload) })
 }
 
 export function deleteConfig(params) {

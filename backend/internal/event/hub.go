@@ -1,10 +1,7 @@
 package event
 
 import (
-	"sort"
 	"sync"
-	"sync/atomic"
-	"time"
 )
 
 // 事件类型。
@@ -22,29 +19,16 @@ type Event struct {
 	Md5       string `json:"md5"`
 }
 
-// Subscriber 订阅端信息（一条 SSE 连接对应一个订阅者，同时订阅配置与实例变更）。
-type Subscriber struct {
-	Id          int64    `json:"id"`
-	Namespace   string   `json:"namespace"`
-	Group       string   `json:"group"`
-	ConfigKeys  []string `json:"configKeys"`
-	InstanceKey string   `json:"instanceKey"`
-	ClientIp    string   `json:"clientIp"`
-	Username    string   `json:"username"`
-	ConnectedAt int64    `json:"connectedAt"`
-}
-
 type subscriber struct {
 	ch   chan Event
 	keys []string
-	meta Subscriber
 }
 
-// Hub 本地 SSE 订阅者管理。
+// Hub 本地 SSE 订阅者管理，仅负责本节点的事件路由。
+// 订阅端信息（跨节点可见）落库到 subscriber_session，不在此维护。
 type Hub struct {
 	mu   sync.RWMutex
 	subs map[string]map[*subscriber]struct{}
-	seq  atomic.Int64
 }
 
 // NewHub 创建订阅中心。
@@ -59,8 +43,8 @@ func subKey(eventType, namespace, group, watchKey string) string {
 // Subscribe 订阅指定维度下的配置与实例变更。configKeys 为要订阅的 dataId 列表：
 // 传 "*" 表示订阅该分组下全部配置变更，传具体 dataId 表示精确订阅，不传（空）表示不订阅配置；
 // instanceKey 为空表示该分组下全部服务变更。一条连接同时订阅两类变更。
-// clientIp 与 username 用于展示订阅端信息。返回事件通道与取消订阅函数。
-func (h *Hub) Subscribe(namespace, group string, configKeys []string, instanceKey, clientIp, username string) (<-chan Event, func()) {
+// 返回事件通道与取消订阅函数。
+func (h *Hub) Subscribe(namespace, group string, configKeys []string, instanceKey string) (<-chan Event, func()) {
 	if configKeys == nil {
 		configKeys = []string{}
 	}
@@ -78,16 +62,6 @@ func (h *Hub) Subscribe(namespace, group string, configKeys []string, instanceKe
 	s := &subscriber{
 		ch:   make(chan Event, 32),
 		keys: keys,
-		meta: Subscriber{
-			Id:          h.seq.Add(1),
-			Namespace:   namespace,
-			Group:       group,
-			ConfigKeys:  configKeys,
-			InstanceKey: instanceKey,
-			ClientIp:    clientIp,
-			Username:    username,
-			ConnectedAt: time.Now().UnixMilli(),
-		},
 	}
 	h.mu.Lock()
 	for _, key := range s.keys {
@@ -99,26 +73,6 @@ func (h *Hub) Subscribe(namespace, group string, configKeys []string, instanceKe
 	h.mu.Unlock()
 
 	return s.ch, func() { h.unsubscribe(s) }
-}
-
-// ListSubscribers 返回当前全部订阅端信息的快照，按连接先后排序。
-// 同一连接注册在配置与实例两个维度下，按连接去重后返回。
-func (h *Hub) ListSubscribers() []Subscriber {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	seen := make(map[*subscriber]struct{})
-	out := make([]Subscriber, 0)
-	for _, set := range h.subs {
-		for s := range set {
-			if _, ok := seen[s]; ok {
-				continue
-			}
-			seen[s] = struct{}{}
-			out = append(out, s.meta)
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Id < out[j].Id })
-	return out
 }
 
 func (h *Hub) unsubscribe(s *subscriber) {

@@ -11,6 +11,7 @@ import (
 	"io"
 	"strings"
 
+	"waymark/internal/diff"
 	"waymark/internal/store"
 )
 
@@ -22,6 +23,9 @@ const exportAllLimit = 10000
 
 // ErrNothingToExport 没有匹配到可导出的配置。
 var ErrNothingToExport = errors.New("没有可导出的配置")
+
+// ErrDraftConflict 草稿基于的已发布版本已被他人覆盖，需确认差异后强制发布或放弃草稿。
+var ErrDraftConflict = errors.New("配置已被他人发布，请先查看差异")
 
 // ExportItem 描述待导出配置的定位信息。
 type ExportItem struct {
@@ -101,6 +105,132 @@ func (s *Service) Restore(namespace, group, dataId string, historyId int64) erro
 		return fmt.Errorf("历史版本与目标配置不匹配")
 	}
 	return s.Publish(namespace, group, dataId, history.Content, history.Type)
+}
+
+// SaveDraft 保存配置草稿。草稿仅保存编辑内容，不写变更日志，因此不会同步到下游。
+// 首次创建草稿时以当前已发布版本摘要作为冲突基线（based_md5）；已有草稿时沿用原基线，
+// 保证编辑期间他人在此之上的发布能被检出。
+func (s *Service) SaveDraft(namespace, group, dataId, content, typ, operator string) (*store.ConfigDraft, error) {
+	existing, err := s.store.GetDraft(namespace, group, dataId)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return nil, err
+	}
+	if typ == "" {
+		if existing != nil {
+			typ = existing.Type
+		} else {
+			typ = "text"
+		}
+	}
+	if err = ValidateContent(typ, content); err != nil {
+		return nil, err
+	}
+
+	basedMd5 := ""
+	if existing != nil {
+		basedMd5 = existing.BasedMd5
+	} else if published, err := s.store.GetConfig(namespace, group, dataId); err == nil {
+		basedMd5 = published.Md5
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return nil, err
+	}
+
+	draft := &store.ConfigDraft{
+		Namespace: namespace,
+		GroupName: group,
+		DataId:    dataId,
+		Content:   content,
+		Md5:       Md5(content),
+		Type:      typ,
+		BasedMd5:  basedMd5,
+		Operator:  operator,
+	}
+	if err = s.store.SaveDraft(draft); err != nil {
+		return nil, err
+	}
+	return draft, nil
+}
+
+// GetDraft 查询配置草稿。
+func (s *Service) GetDraft(namespace, group, dataId string) (*store.ConfigDraft, error) {
+	return s.store.GetDraft(namespace, group, dataId)
+}
+
+// DiscardDraft 放弃配置草稿。
+func (s *Service) DiscardDraft(namespace, group, dataId string) error {
+	return s.store.DeleteDraft(namespace, group, dataId)
+}
+
+// DraftDiff 草稿与已发布版本的差异预览结果。
+// HasPublished 表示配置是否已发布过；Conflict 表示草稿基线与当前已发布版本不一致（已被他人发布）。
+type DraftDiff struct {
+	HasPublished bool        `json:"hasPublished"`
+	Changed      bool        `json:"changed"`
+	Conflict     bool        `json:"conflict"`
+	PublishedMd5 string      `json:"publishedMd5"`
+	DraftMd5     string      `json:"draftMd5"`
+	Stats        diff.Stats  `json:"stats"`
+	Lines        []diff.Line `json:"lines"`
+}
+
+// PreviewDraft 对比草稿与当前已发布版本，返回结构化差异与冲突标记。
+func (s *Service) PreviewDraft(namespace, group, dataId string) (*DraftDiff, error) {
+	draft, err := s.store.GetDraft(namespace, group, dataId)
+	if err != nil {
+		return nil, err
+	}
+
+	publishedContent, publishedMd5 := "", ""
+	hasPublished := true
+	if item, err := s.store.GetConfig(namespace, group, dataId); err == nil {
+		publishedContent, publishedMd5 = item.Content, item.Md5
+	} else if errors.Is(err, store.ErrNotFound) {
+		hasPublished = false
+	} else {
+		return nil, err
+	}
+
+	result := diff.Compare(publishedContent, draft.Content)
+	return &DraftDiff{
+		HasPublished: hasPublished,
+		Changed:      result.Changed,
+		Conflict:     draft.BasedMd5 != publishedMd5,
+		PublishedMd5: publishedMd5,
+		DraftMd5:     draft.Md5,
+		Stats:        result.Stats,
+		Lines:        result.Lines,
+	}, nil
+}
+
+// PublishDraft 发布草稿：将草稿内容写入正式配置并通知下游，发布成功后删除草稿。
+// force 为 true 时跳过冲突校验（强制覆盖当前已发布版本）。
+func (s *Service) PublishDraft(namespace, group, dataId string, force bool) error {
+	draft, err := s.store.GetDraft(namespace, group, dataId)
+	if err != nil {
+		return err
+	}
+
+	publishedMd5 := ""
+	if item, err := s.store.GetConfig(namespace, group, dataId); err == nil {
+		publishedMd5 = item.Md5
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+	if !force && draft.BasedMd5 != publishedMd5 {
+		return ErrDraftConflict
+	}
+	if err = ValidateContent(draft.Type, draft.Content); err != nil {
+		return err
+	}
+
+	return s.store.PublishDraft(&store.ConfigItem{
+		Namespace: namespace,
+		GroupName: group,
+		DataId:    dataId,
+		Content:   draft.Content,
+		Md5:       draft.Md5,
+		Type:      draft.Type,
+	}, true)
 }
 
 // Export 将配置打包为 zip 字节流。

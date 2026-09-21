@@ -15,15 +15,43 @@ func (s *Store) AppendChangeLog(eventType, namespace, group, watchKey, md5 strin
 
 // UpsertConfig 发布或更新配置：写主表 + 历史 + 变更日志（同一事务）。
 func (s *Store) UpsertConfig(item *ConfigItem) error {
-	now := time.Now().UnixMilli()
 	tx, err := s.db.Beginx()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	if err = s.upsertConfigTx(tx, item, time.Now().UnixMilli()); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// PublishDraft 发布草稿：发布配置的同时删除草稿（同一事务）。clearDraft 为 true 时删除草稿记录，
+// 强制发布（草稿基于的版本已被他人覆盖）时也会清理草稿。
+func (s *Store) PublishDraft(item *ConfigItem, clearDraft bool) error {
+	tx, err := s.db.Beginx()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err = s.upsertConfigTx(tx, item, time.Now().UnixMilli()); err != nil {
+		return err
+	}
+	if clearDraft {
+		if _, err = tx.Exec("DELETE FROM config_draft WHERE namespace = ? AND group_name = ? AND data_id = ?",
+			item.Namespace, item.GroupName, item.DataId); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// upsertConfigTx 在事务内写入配置主表、历史版本与变更日志。
+func (s *Store) upsertConfigTx(tx *sqlx.Tx, item *ConfigItem, now int64) error {
 	var id int64
-	err = tx.Get(&id, "SELECT id FROM config_info WHERE namespace = ? AND group_name = ? AND data_id = ?",
+	err := tx.Get(&id, "SELECT id FROM config_info WHERE namespace = ? AND group_name = ? AND data_id = ?",
 		item.Namespace, item.GroupName, item.DataId)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -48,10 +76,51 @@ func (s *Store) UpsertConfig(item *ConfigItem) error {
 		return err
 	}
 
-	if err = s.appendChangeLog(tx, "CONFIG", item.Namespace, item.GroupName, item.DataId, item.Md5, now); err != nil {
+	return s.appendChangeLog(tx, "CONFIG", item.Namespace, item.GroupName, item.DataId, item.Md5, now)
+}
+
+// SaveDraft 保存配置草稿（不存在则创建，存在则更新），草稿不写变更日志，不影响下游。
+func (s *Store) SaveDraft(draft *ConfigDraft) error {
+	now := time.Now().UnixMilli()
+	var id int64
+	err := s.db.Get(&id, "SELECT id FROM config_draft WHERE namespace = ? AND group_name = ? AND data_id = ?",
+		draft.Namespace, draft.GroupName, draft.DataId)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		draft.CreateTime = now
+		draft.UpdateTime = now
+		res, err := s.db.Exec("INSERT INTO config_draft (namespace, group_name, data_id, content, md5, type, based_md5, operator, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			draft.Namespace, draft.GroupName, draft.DataId, draft.Content, draft.Md5, draft.Type, draft.BasedMd5, draft.Operator, draft.CreateTime, draft.UpdateTime)
+		if err != nil {
+			return err
+		}
+		draft.Id, _ = res.LastInsertId()
+		return nil
+	case err != nil:
+		return err
+	default:
+		draft.Id = id
+		draft.UpdateTime = now
+		_, err = s.db.Exec("UPDATE config_draft SET content = ?, md5 = ?, type = ?, based_md5 = ?, operator = ?, update_time = ? WHERE id = ?",
+			draft.Content, draft.Md5, draft.Type, draft.BasedMd5, draft.Operator, draft.UpdateTime, id)
 		return err
 	}
-	return tx.Commit()
+}
+
+// GetDraft 查询配置草稿。
+func (s *Store) GetDraft(namespace, group, dataId string) (*ConfigDraft, error) {
+	var draft ConfigDraft
+	err := s.db.Get(&draft, "SELECT * FROM config_draft WHERE namespace = ? AND group_name = ? AND data_id = ?", namespace, group, dataId)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return &draft, err
+}
+
+// DeleteDraft 删除配置草稿。
+func (s *Store) DeleteDraft(namespace, group, dataId string) error {
+	_, err := s.db.Exec("DELETE FROM config_draft WHERE namespace = ? AND group_name = ? AND data_id = ?", namespace, group, dataId)
+	return err
 }
 
 // GetConfig 查询配置项。
@@ -64,26 +133,33 @@ func (s *Store) GetConfig(namespace, group, dataId string) (*ConfigItem, error) 
 	return &item, err
 }
 
-// ListConfigs 分页查询配置列表，返回列表与总数。
+// ListConfigs 分页查询配置列表，返回列表与总数；同时联查草稿信息（hasDraft/draftMd5/draftUpdateTime/draftOperator）。
 func (s *Store) ListConfigs(namespace, group, dataId string, pageNum, pageSize int) ([]ConfigItem, int64, error) {
-	where := " WHERE namespace = ?"
+	where := " WHERE c.namespace = ?"
 	args := []any{namespace}
 	if group != "" {
-		where += " AND group_name = ?"
+		where += " AND c.group_name = ?"
 		args = append(args, group)
 	}
 	if dataId != "" {
-		where += " AND data_id LIKE ?"
+		where += " AND c.data_id LIKE ?"
 		args = append(args, "%"+dataId+"%")
 	}
 
 	var total int64
-	if err := s.db.Get(&total, "SELECT COUNT(1) FROM config_info"+where, args...); err != nil {
+	if err := s.db.Get(&total, "SELECT COUNT(1) FROM config_info c"+where, args...); err != nil {
 		return nil, 0, err
 	}
 
 	list := make([]ConfigItem, 0)
-	query := "SELECT * FROM config_info" + where + " ORDER BY group_name ASC, data_id ASC LIMIT ? OFFSET ?"
+	query := `SELECT c.*,
+	CASE WHEN d.id IS NULL THEN 0 ELSE 1 END AS has_draft,
+	COALESCE(d.md5, '') AS draft_md5,
+	COALESCE(d.update_time, 0) AS draft_update_time,
+	COALESCE(d.operator, '') AS draft_operator
+	FROM config_info c
+	LEFT JOIN config_draft d ON d.namespace = c.namespace AND d.group_name = c.group_name AND d.data_id = c.data_id` +
+		where + " ORDER BY c.group_name ASC, c.data_id ASC LIMIT ? OFFSET ?"
 	queryArgs := append(append([]any{}, args...), pageSize, (pageNum-1)*pageSize)
 	if err := s.db.Select(&list, query, queryArgs...); err != nil {
 		return nil, 0, err
@@ -105,6 +181,11 @@ func (s *Store) DeleteConfig(namespace, group, dataId string) error {
 		return err
 	}
 	if err := ensureAffected(res); err != nil {
+		return err
+	}
+	// 配置已删除，其草稿失去意义，一并清理避免残留孤儿草稿。
+	if _, err := tx.Exec("DELETE FROM config_draft WHERE namespace = ? AND group_name = ? AND data_id = ?",
+		namespace, group, dataId); err != nil {
 		return err
 	}
 	if err := s.appendChangeLog(tx, "CONFIG", namespace, group, dataId, "", now); err != nil {

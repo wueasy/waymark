@@ -57,7 +57,14 @@
           @selection-change="onSelectionChange"
         >
           <el-table-column type="selection" width="45" />
-          <el-table-column prop="dataId" label="Data ID" min-width="200" />
+          <el-table-column prop="dataId" label="Data ID" min-width="200">
+            <template #default="{ row }">
+              <span>{{ row.dataId }}</span>
+              <el-tooltip v-if="row.hasDraft" :content="draftTip(row)" placement="top">
+                <el-tag size="small" type="warning" effect="plain" class="draft-tag">草稿</el-tag>
+              </el-tooltip>
+            </template>
+          </el-table-column>
           <el-table-column prop="groupName" label="分组" width="160" />
           <el-table-column label="类型" width="110">
             <template #default="{ row }">
@@ -68,10 +75,26 @@
           <el-table-column label="更新时间" width="170">
             <template #default="{ row }">{{ formatTime(row.updateTime) }}</template>
           </el-table-column>
-          <el-table-column label="操作" width="250">
+          <el-table-column label="操作" width="340">
             <template #default="{ row }">
               <el-button link type="primary" @click="openDetail(row)">详情</el-button>
               <el-button v-if="canWrite" link type="primary" @click="openEdit(row)">编辑</el-button>
+              <template v-if="row.hasDraft">
+                <el-button
+                  v-if="canWrite"
+                  link
+                  type="primary"
+                  :loading="previewing && previewRow?.dataId === row.dataId"
+                  @click="openPreview(row)"
+                >
+                  预览发布
+                </el-button>
+                <el-popconfirm v-if="canWrite" title="确认放弃该配置的草稿？" @confirm="discardDraft(row)">
+                  <template #reference>
+                    <el-button link type="danger">放弃草稿</el-button>
+                  </template>
+                </el-popconfirm>
+              </template>
               <el-button link type="primary" @click="openHistory(row)">历史</el-button>
               <el-popconfirm v-if="canWrite" title="确认删除该配置？" @confirm="remove(row)">
                 <template #reference>
@@ -84,10 +107,12 @@
 
         <el-pagination
           class="pager"
-          layout="total, prev, pager, next"
+          layout="total, sizes, prev, pager, next"
           :total="total"
           :page-size="pageSize"
           :current-page="pageNum"
+          :page-sizes="[10, 20, 50, 100]"
+          @size-change="onSizeChange"
           @current-change="onPageChange"
         />
       </el-card>
@@ -128,7 +153,63 @@
         </el-form>
         <template #footer>
           <el-button @click="editVisible = false">关闭</el-button>
-          <el-button v-if="canWrite" type="primary" :loading="submitting" @click="submit">保存</el-button>
+          <el-button v-if="canWrite" type="primary" :loading="submitting" @click="submit">
+            {{ editing ? '保存草稿' : '创建并发布' }}
+          </el-button>
+        </template>
+      </el-dialog>
+
+      <el-dialog v-model="previewVisible" title="发布预览" width="min(66vw, 980px)" class="config-dialog preview-dialog">
+        <el-alert
+          v-if="preview.conflict"
+          type="warning"
+          :closable="false"
+          show-icon
+          title="配置已被他人发布"
+          description="草稿基于的版本已不是当前线上版本，请先核对下方差异；确认无误后可强制发布覆盖线上内容。"
+        />
+        <el-descriptions :column="2" border size="small" class="preview-meta">
+          <el-descriptions-item label="Data ID">{{ previewRow?.dataId }}</el-descriptions-item>
+          <el-descriptions-item label="分组">{{ previewRow?.groupName }}</el-descriptions-item>
+          <el-descriptions-item label="变更行数">
+            <span class="diff-add">+{{ preview.stats.added }}</span>
+            <span class="diff-del">-{{ preview.stats.removed }}</span>
+          </el-descriptions-item>
+          <el-descriptions-item label="草稿摘要">{{ preview.draftMd5 }}</el-descriptions-item>
+          <el-descriptions-item label="线上摘要" :span="2">
+            {{ preview.hasPublished ? preview.publishedMd5 : '未发布' }}
+          </el-descriptions-item>
+        </el-descriptions>
+
+        <div class="content-toolbar">
+          <span class="content-status">
+            <template v-if="!preview.hasPublished">该配置尚未发布，发布后将作为首个版本生效。</template>
+            <template v-else-if="!preview.changed">草稿内容与线上版本一致，无变更。</template>
+            <template v-else>共 {{ preview.stats.added }} 行新增、{{ preview.stats.removed }} 行删除。</template>
+          </span>
+          <el-checkbox v-if="preview.changed" v-model="showUnchanged" label="显示未变更行" size="small" />
+        </div>
+
+        <div v-if="previewLines.length" class="diff-list">
+          <div v-for="(line, index) in previewLines" :key="index" class="diff-line" :class="`is-${line.op}`">
+            <span class="diff-no">{{ line.oldNo || '' }}</span>
+            <span class="diff-no">{{ line.newNo || '' }}</span>
+            <span class="diff-op">{{ diffOpLabel(line.op) }}</span>
+            <span class="diff-text">{{ line.text }}</span>
+          </div>
+        </div>
+
+        <template #footer>
+          <el-button @click="previewVisible = false">关闭</el-button>
+          <el-button v-if="canWrite" :loading="publishing" @click="discardDraft(previewRow)">放弃草稿</el-button>
+          <el-button
+            v-if="canWrite"
+            :type="preview.conflict ? 'danger' : 'primary'"
+            :loading="publishing"
+            @click="publishDraft(preview.conflict)"
+          >
+            {{ preview.conflict ? '强制发布' : '发布' }}
+          </el-button>
         </template>
       </el-dialog>
 
@@ -154,10 +235,12 @@
         </el-table>
         <el-pagination
           class="pager"
-          layout="total, prev, pager, next"
+          layout="total, sizes, prev, pager, next"
           :total="historyTotal"
           :page-size="historyPageSize"
           :current-page="historyPageNum"
+          :page-sizes="[10, 20, 50, 100]"
+          @size-change="onHistorySizeChange"
           @current-change="onHistoryPageChange"
         />
       </el-dialog>
@@ -227,7 +310,21 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { configHistory, deleteConfig, exportConfigs, getConfig, importConfigs, listConfigs, publishConfig, restoreConfig } from '../api'
+import {
+  configHistory,
+  deleteConfig,
+  discardConfigDraft,
+  exportConfigs,
+  getConfig,
+  getConfigDraft,
+  importConfigs,
+  listConfigs,
+  previewConfigDraft,
+  publishConfig,
+  publishConfigDraft,
+  restoreConfig,
+  saveConfigDraft
+} from '../api'
 import { loadNamespaces, namespaceStore, setNamespace, userStore } from '../store'
 import { formatTime } from '../utils'
 import CodeEditor from '../components/CodeEditor.vue'
@@ -295,6 +392,25 @@ const importGroup = ref('')
 const importFile = ref(null)
 const uploadRef = ref()
 
+const previewVisible = ref(false)
+const previewing = ref(false)
+const publishing = ref(false)
+const previewRow = ref(null)
+const preview = reactive({
+  hasPublished: false,
+  changed: false,
+  conflict: false,
+  publishedMd5: '',
+  draftMd5: '',
+  stats: { added: 0, removed: 0 },
+  lines: []
+})
+const showUnchanged = ref(false)
+const previewLines = computed(() =>
+  showUnchanged.value ? preview.lines : preview.lines.filter((line) => line.op !== 'equal')
+)
+const DIFF_OP_LABELS = { equal: '', add: '+', del: '-' }
+
 onMounted(async () => {
   try {
     await loadNamespaces()
@@ -339,6 +455,13 @@ function onPageChange(page) {
   loadConfigs()
 }
 
+// 切换每页条数后回到第一页重新加载。
+function onSizeChange(size) {
+  pageSize.value = size
+  pageNum.value = 1
+  loadConfigs()
+}
+
 function openCreate() {
   editing.value = false
   form.dataId = ''
@@ -349,14 +472,13 @@ function openCreate() {
   editVisible.value = true
 }
 
+/** 编辑：优先载入未发布的草稿，否则载入线上内容。 */
 async function openEdit(row) {
   editing.value = true
   try {
-    const item = await getConfig({
-      namespace: namespace.value,
-      groupName: row.groupName,
-      dataId: row.dataId
-    })
+    const base = { namespace: namespace.value, groupName: row.groupName, dataId: row.dataId }
+    const draft = await getConfigDraft(base)
+    const item = draft || (await getConfig(base))
     form.dataId = item.dataId
     form.groupName = item.groupName
     form.type = item.type
@@ -410,20 +532,107 @@ async function submit() {
   }
   submitting.value = true
   try {
-    await publishConfig({
+    const payload = {
       namespace: namespace.value,
       groupName: form.groupName || group.value,
       dataId: form.dataId,
       content: form.content,
       type: form.type
-    })
-    ElMessage.success('保存成功')
+    }
+    if (editing.value) {
+      await saveConfigDraft(payload)
+      ElMessage.success('草稿已保存，发布后才会同步到下游')
+    } else {
+      await publishConfig(payload)
+      ElMessage.success('发布成功')
+    }
     editVisible.value = false
     await loadConfigs()
   } catch (e) {
     ElMessage.error(e.message)
   } finally {
     submitting.value = false
+  }
+}
+
+/** 草稿提示：展示草稿操作人与更新时间。 */
+function draftTip(row) {
+  const parts = ['存在未发布的草稿']
+  if (row.draftOperator) parts.push(`操作人：${row.draftOperator}`)
+  if (row.draftUpdateTime) parts.push(`更新时间：${formatTime(row.draftUpdateTime)}`)
+  return parts.join('；')
+}
+
+/** diff 行的操作标记。 */
+function diffOpLabel(op) {
+  return DIFF_OP_LABELS[op] || ''
+}
+
+/** 打开发布预览，拉取草稿相对线上版本的变更。 */
+async function openPreview(row) {
+  previewRow.value = row
+  showUnchanged.value = false
+  previewing.value = true
+  try {
+    const data = await previewConfigDraft({
+      namespace: namespace.value,
+      groupName: row.groupName,
+      dataId: row.dataId
+    })
+    preview.hasPublished = !!data.hasPublished
+    preview.changed = !!data.changed
+    preview.conflict = !!data.conflict
+    preview.publishedMd5 = data.publishedMd5 || ''
+    preview.draftMd5 = data.draftMd5 || ''
+    preview.stats = data.stats || { added: 0, removed: 0 }
+    preview.lines = data.lines || []
+    previewVisible.value = true
+  } catch (e) {
+    ElMessage.error(e.message)
+  } finally {
+    previewing.value = false
+  }
+}
+
+/** 发布草稿，force 为 true 时覆盖已被他人更新的线上版本。 */
+async function publishDraft(force) {
+  const row = previewRow.value
+  if (!row) return
+  publishing.value = true
+  try {
+    await publishConfigDraft({
+      namespace: namespace.value,
+      groupName: row.groupName,
+      dataId: row.dataId,
+      force: !!force
+    })
+    ElMessage.success('发布成功')
+    previewVisible.value = false
+    await loadConfigs()
+  } catch (e) {
+    ElMessage.error(e.message)
+  } finally {
+    publishing.value = false
+  }
+}
+
+/** 放弃草稿，草稿删除后线上内容不受影响。 */
+async function discardDraft(row) {
+  if (!row) return
+  publishing.value = true
+  try {
+    await discardConfigDraft({
+      namespace: namespace.value,
+      groupName: row.groupName,
+      dataId: row.dataId
+    })
+    ElMessage.success('草稿已放弃')
+    previewVisible.value = false
+    await loadConfigs()
+  } catch (e) {
+    ElMessage.error(e.message)
+  } finally {
+    publishing.value = false
   }
 }
 
@@ -465,6 +674,13 @@ async function loadHistory() {
 
 function onHistoryPageChange(page) {
   historyPageNum.value = page
+  loadHistory()
+}
+
+// 切换历史版本每页条数后回到第一页重新加载。
+function onHistorySizeChange(size) {
+  historyPageSize.value = size
+  historyPageNum.value = 1
   loadHistory()
 }
 
@@ -661,6 +877,9 @@ async function submitImport() {
   font-size: 12px;
   line-height: 1.6;
 }
+.draft-tag {
+  margin-left: 6px;
+}
 </style>
 
 <!-- el-dialog 渲染在 body 下，需用非 scoped 样式调整 -->
@@ -680,5 +899,62 @@ async function submitImport() {
 .detail-dialog .el-dialog__body {
   max-height: 68vh;
   overflow-y: auto;
+}
+/* 发布预览弹窗 */
+.preview-dialog .el-dialog__body {
+  max-height: 68vh;
+  overflow-y: auto;
+}
+.preview-meta {
+  margin-bottom: 12px;
+}
+.diff-add {
+  margin-right: 12px;
+  color: var(--el-color-success);
+}
+.diff-del {
+  color: var(--el-color-danger);
+}
+.diff-list {
+  max-height: min(42vh, 380px);
+  overflow: auto;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 4px;
+  background: var(--el-bg-color);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 20px;
+}
+.diff-line {
+  display: flex;
+  align-items: flex-start;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.diff-line.is-add {
+  background: var(--el-color-success-light-9);
+}
+.diff-line.is-del {
+  background: var(--el-color-danger-light-9);
+}
+.diff-line.is-equal {
+  color: var(--el-text-color-secondary);
+}
+.diff-no {
+  flex: 0 0 44px;
+  padding: 0 6px;
+  text-align: right;
+  color: var(--el-text-color-placeholder);
+  user-select: none;
+}
+.diff-op {
+  flex: 0 0 16px;
+  text-align: center;
+  user-select: none;
+}
+.diff-text {
+  flex: 1;
+  min-width: 0;
+  padding-right: 8px;
 }
 </style>

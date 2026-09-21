@@ -9,8 +9,10 @@ var mysqlTables = []string{
 	"namespace",
 	"service_instance",
 	"config_info",
+	"config_draft",
 	"config_history",
 	"change_log",
+	"subscriber_session",
 	"cluster_node",
 	"cluster_leader",
 }
@@ -99,6 +101,21 @@ var sqliteSchema = []string{
 		"UNIQUE (namespace, group_name, data_id)" +
 		")",
 
+	"CREATE TABLE IF NOT EXISTS config_draft (" +
+		"id INTEGER PRIMARY KEY AUTOINCREMENT," +
+		"namespace TEXT NOT NULL DEFAULT 'public'," +
+		"group_name TEXT NOT NULL DEFAULT 'DEFAULT_GROUP'," +
+		"data_id TEXT NOT NULL," +
+		"content TEXT NOT NULL," +
+		"md5 TEXT NOT NULL," +
+		"type TEXT NOT NULL DEFAULT 'text'," +
+		"based_md5 TEXT NOT NULL DEFAULT ''," +
+		"operator TEXT NOT NULL DEFAULT ''," +
+		"create_time INTEGER NOT NULL," +
+		"update_time INTEGER NOT NULL," +
+		"UNIQUE (namespace, group_name, data_id)" +
+		")",
+
 	"CREATE TABLE IF NOT EXISTS config_history (" +
 		"id INTEGER PRIMARY KEY AUTOINCREMENT," +
 		"namespace TEXT NOT NULL," +
@@ -119,6 +136,23 @@ var sqliteSchema = []string{
 		"md5 TEXT NOT NULL DEFAULT ''," +
 		"change_time INTEGER NOT NULL" +
 		")",
+
+	"CREATE TABLE IF NOT EXISTS subscriber_session (" +
+		"id INTEGER PRIMARY KEY AUTOINCREMENT," +
+		"node_id TEXT NOT NULL," +
+		"namespace TEXT NOT NULL DEFAULT 'public'," +
+		"group_name TEXT NOT NULL DEFAULT 'DEFAULT_GROUP'," +
+		"config_keys TEXT NOT NULL DEFAULT '[]'," +
+		"instance_key TEXT NOT NULL DEFAULT ''," +
+		"client_ip TEXT NOT NULL DEFAULT ''," +
+		"username TEXT NOT NULL DEFAULT ''," +
+		"connected_at INTEGER NOT NULL," +
+		"last_heartbeat INTEGER NOT NULL DEFAULT 0" +
+		")",
+
+	"CREATE INDEX IF NOT EXISTS idx_subscriber_namespace ON subscriber_session (namespace)",
+
+	"CREATE INDEX IF NOT EXISTS idx_subscriber_node ON subscriber_session (node_id)",
 
 	"CREATE TABLE IF NOT EXISTS cluster_node (" +
 		"id INTEGER PRIMARY KEY AUTOINCREMENT," +
